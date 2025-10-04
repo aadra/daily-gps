@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>My Daily GPS Trail</title>
+
+    <!-- MapLibre -->
+    <link
+      href="https://unpkg.com/maplibre-gl@3.6.0/dist/maplibre-gl.css"
+      rel="stylesheet"
+    />
+    <script src="https://unpkg.com/maplibre-gl@3.6.0/dist/maplibre-gl.js"></script>
+
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          sans-serif;
+        overflow: hidden;
+      }
+
+      #map {
+        position: absolute;
+        top: 0;
+        bottom: 140px;
+        width: 100%;
+      }
+
+      .controls {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: rgba(255, 255, 255, 0.95);
+        display: flex;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 10px;
+        padding: 10px;
+        box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
+      }
+
+      button,
+      label {
+        flex: 1 1 auto;
+        min-width: 100px;
+        max-width: 160px;
+        font-size: 15px;
+        padding: 10px;
+        border: none;
+        border-radius: 8px;
+        background-color: #007aff;
+        color: white;
+        cursor: pointer;
+        text-align: center;
+        transition: background-color 0.2s;
+      }
+
+      button:hover,
+      label:hover {
+        background-color: #005ecb;
+      }
+
+      input[type="file"] {
+        display: none;
+      }
+
+      .stats {
+        position: absolute;
+        bottom: 100px;
+        left: 0;
+        right: 0;
+        background: rgba(255, 255, 255, 0.85);
+        text-align: center;
+        font-size: 16px;
+        padding: 8px 0;
+        border-top: 1px solid #ddd;
+      }
+
+      @media (max-width: 600px) {
+        #map {
+          bottom: 160px;
+        }
+        .stats {
+          bottom: 120px;
+          font-size: 14px;
+        }
+        button,
+        label {
+          font-size: 14px;
+          min-width: 90px;
+          padding: 8px;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="map"></div>
+
+    <div class="stats">
+      <span id="distance">Distance: 0 m</span> |
+      <span id="time">Time: 0m 0s</span>
+    </div>
+
+    <div class="controls">
+      <button onclick="startTracking()">Start</button>
+      <button onclick="resetTrail()">Reset</button>
+      <button onclick="downloadGeoJSON()">Download</button>
+      <label for="fileInput">Upload</label>
+      <input id="fileInput" type="file" accept=".geojson,application/json" />
+    </div>
+
+    <script>
+      let map;
+      let coords = JSON.parse(localStorage.getItem("gpsTrail") || "[]");
+      let marker;
+      let startTime = localStorage.getItem("gpsStartTime")
+        ? new Date(localStorage.getItem("gpsStartTime"))
+        : null;
+      let watchId = null;
+
+      map = new maplibregl.Map({
+        container: "map",
+        style: "https://demotiles.maplibre.org/style.json",
+        center: coords.length ? [coords[0].lng, coords[0].lat] : [0, 0],
+        zoom: coords.length ? 14 : 2,
+        attributionControl: false,
+      });
+
+      map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+      map.on("load", () => {
+        map.addSource("trail", {
+          type: "geojson",
+          data: {
+            type: "Feature",
+            geometry: {
+              type: "LineString",
+              coordinates: coords.map((c) => [c.lng, c.lat]),
+            },
+          },
+        });
+
+        map.addLayer({
+          id: "trail-line",
+          type: "line",
+          source: "trail",
+          paint: { "line-color": "#ff3b30", "line-width": 4 },
+        });
+
+        if (coords.length) {
+          const last = coords[coords.length - 1];
+          marker = new maplibregl.Marker({ color: "#007aff" })
+            .setLngLat([last.lng, last.lat])
+            .addTo(map);
+        }
+
+        updateStats();
+      });
+
+      function updateTrail() {
+        if (map.getSource("trail")) {
+          map.getSource("trail").setData({
+            type: "Feature",
+            geometry: {
+              type: "LineString",
+              coordinates: coords.map((c) => [c.lng, c.lat]),
+            },
+          });
+        }
+        localStorage.setItem("gpsTrail", JSON.stringify(coords));
+
+        if (coords.length) {
+          const last = coords[coords.length - 1];
+          if (!marker) {
+            marker = new maplibregl.Marker({ color: "#007aff" }).addTo(map);
+          }
+          marker.setLngLat([last.lng, last.lat]);
+        }
+
+        updateStats();
+      }
+
+      function startTracking() {
+        if (!navigator.geolocation)
+          return alert("Geolocation not supported on this device.");
+
+        if (!startTime) {
+          startTime = new Date();
+          localStorage.setItem("gpsStartTime", startTime.toISOString());
+        }
+
+        if (watchId) return; // already running
+
+        watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            const { latitude, longitude } = pos.coords;
+            coords.push({ lat: latitude, lng: longitude });
+            updateTrail();
+            map.flyTo({ center: [longitude, latitude], zoom: 15 });
+          },
+          (err) => console.error(err),
+          { enableHighAccuracy: true, maximumAge: 0 }
+        );
+      }
+
+      function resetTrail() {
+        coords = [];
+        localStorage.removeItem("gpsTrail");
+        localStorage.removeItem("gpsStartTime");
+        startTime = null;
+        if (watchId) {
+          navigator.geolocation.clearWatch(watchId);
+          watchId = null;
+        }
+        updateTrail();
+        if (marker) marker.remove();
+        marker = null;
+        document.getElementById("distance").textContent = "Distance: 0 m";
+        document.getElementById("time").textContent = "Time: 0m 0s";
+      }
+
+      function downloadGeoJSON() {
+        const geojson = {
+          type: "Feature",
+          geometry: {
+            type: "LineString",
+            coordinates: coords.map((c) => [c.lng, c.lat]),
+          },
+          properties: {
+            startTime: startTime ? startTime.toISOString() : null,
+          },
+        };
+        const blob = new Blob([JSON.stringify(geojson, null, 2)], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "gps-trail.geojson";
+        a.click();
+      }
+
+      // Upload GeoJSON file
+      document.getElementById("fileInput").addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const geojson = JSON.parse(event.target.result);
+            if (
+              geojson.type === "Feature" &&
+              geojson.geometry.type === "LineString"
+            ) {
+              coords = geojson.geometry.coordinates.map(([lng, lat]) => ({
+                lat,
+                lng,
+              }));
+              updateTrail();
+              const bounds = coords.reduce(
+                (b, c) => b.extend([c.lng, c.lat]),
+                new maplibregl.LngLatBounds(coords[0], coords[0])
+              );
+              map.fitBounds(bounds, { padding: 50 });
+            } else {
+              alert("Invalid GeoJSON format — must be a LineString Feature.");
+            }
+          } catch (err) {
+            alert("Error reading file: " + err.message);
+          }
+        };
+        reader.readAsText(file);
+      });
+
+      // Calculate distance (in meters)
+      function calculateDistance() {
+        let dist = 0;
+        for (let i = 1; i < coords.length; i++) {
+          const prev = coords[i - 1];
+          const curr = coords[i];
+          dist += haversine(prev, curr);
+        }
+        return dist;
+      }
+
+      // Haversine formula
+      function haversine(a, b) {
+        const R = 6371000; // Earth radius (m)
+        const toRad = (x) => (x * Math.PI) / 180;
+        const dLat = toRad(b.lat - a.lat);
+        const dLon = toRad(b.lng - a.lng);
+        const lat1 = toRad(a.lat);
+        const lat2 = toRad(b.lat);
+        const x =
+          Math.sin(dLat / 2) ** 2 +
+          Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+        return 2 * R * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+      }
+
+      function updateStats() {
+        const dist = calculateDistance();
+        document.getElementById("distance").textContent =
+          "Distance: " +
+          (dist > 1000
+            ? (dist / 1000).toFixed(2) + " km"
+            : dist.toFixed(0) + " m");
+
+        if (startTime) {
+          const elapsed = Math.floor((new Date() - startTime) / 1000);
+          const mins = Math.floor(elapsed / 60);
+          const secs = elapsed % 60;
+          document.getElementById("time").textContent = `Time: ${mins}m ${secs}s`;
+        }
+      }
+
+      // update time every second
+      setInterval(updateStats, 1000);
+    </script>
+  </body>
+</html>
